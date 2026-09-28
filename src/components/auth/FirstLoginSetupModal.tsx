@@ -63,7 +63,7 @@ export const FirstLoginSetupModal: React.FC<FirstLoginSetupModalProps> = ({
             <Sparkles className="w-6 h-6 text-indigo-600" />
           </div>
           <h2 className="text-xl font-bold text-slate-900">
-            Welcome to AttendPlan, {user.name}!
+            Welcome, {user.name}!
           </h2>
           <p className="text-xs sm:text-sm text-slate-500">
             Let&apos;s link your official college section and semester timetable.
