@@ -1,0 +1,6 @@
+{
+  "name": "Student Attendance Planner & Bunk Calculator",
+  "description": "Calculate remaining classes, required attendance to reach 75%, 80%, or 90% targets, missable classes, and avoid irreversible detention.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
