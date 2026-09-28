@@ -1,20 +1,24 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# 🎓 Student Attendance Planner & Bunk Calculator
 
-# Run and deploy your AI Studio app
+A smart, student-focused attendance management and planning system that helps students understand their current attendance, calculate how many classes they can safely miss, and plan their attendance throughout the semester.
 
-This contains everything you need to run your app locally.
+## 🚀 Project Overview
 
-View your app in AI Studio: https://ai.studio/apps/e203c1d1-92cd-4277-a9d1-31d0a0851ced
+**Student Attendance Planner & Bunk Calculator** is designed to solve a common student problem:
 
-## Run Locally
+> **"How many classes can I miss without falling below the required attendance?"**
 
-**Prerequisites:**  Node.js
+Instead of only displaying an attendance percentage, the application helps students make attendance decisions using current attendance data, semester dates, subject schedules, and future planning.
 
+The system provides calculations and simulations for maintaining attendance above the safe limit while helping students understand their remaining attendance opportunities.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## 🎯 Problem Statement
+
+Students often struggle to determine:
+
+* How many classes are remaining in the semester
+* How many classes they can safely miss
+* How many classes they must attend to reach a target attendance
+* Whether they can recover f
