@@ -22,6 +22,10 @@ import {
   Info,
   Building2,
   Trash2,
+  Send,
+  MapPin,
+  Flame,
+  Radio,
 } from 'lucide-react';
 import { Room, StructuredRoomQuery, RoomStatus, RankedRoomMatch } from '../../types/rooms';
 import { getCustomizedRooms, saveCustomizedRooms } from '../../data/roomData';
@@ -35,19 +39,25 @@ import {
   COLLEGE_TIME_SLOTS,
 } from '../../utils/classroomAvailabilityEngine';
 import { RoomDetailsModal } from './RoomDetailsModal';
+import { SquadShareModal } from './SquadShareModal';
+import { BuildingMap } from './BuildingMap';
 
 const FAVORITES_STORAGE_KEY = 'attendplan_favorite_rooms_v1';
 const RECENT_SEARCHES_KEY = 'attendplan_room_recent_searches_v1';
+const CLAIMED_ROOM_KEY = 'attendplan_claimed_room_v1';
 
 export const FreeClassroomLocator: React.FC = () => {
   // 1. Current runtime date & time
   const [liveNow, setLiveNow] = useState<Date>(() => new Date());
 
-  // Keep live time ticking every 30 seconds
+  // Dual mode: LIVE MODE vs PLANNING MODE (Requirement 6)
+  const [isLiveMode, setIsLiveMode] = useState<boolean>(true);
+
+  // Single shared timer ticking every 1000ms (1 second) for countdown precision (Requirement 5 & 21)
   useEffect(() => {
     const timer = setInterval(() => {
       setLiveNow(new Date());
-    }, 30000);
+    }, 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -59,13 +69,16 @@ export const FreeClassroomLocator: React.FC = () => {
     return `${liveNow.getHours().toString().padStart(2, '0')}:${liveNow.getMinutes().toString().padStart(2, '0')}`;
   }, [liveNow]);
 
+  const liveTimeFormatted = useMemo(() => {
+    return liveNow.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }, [liveNow]);
+
   // 2. Room dataset (with user-customized capacities & specs preserved)
   const [rooms, setRooms] = useState<Room[]>(() => getCustomizedRooms());
 
   // 3. User filter inputs
   const [selectedDate, setSelectedDate] = useState<string>(liveDateStr);
   const [selectedStartTime, setSelectedStartTime] = useState<string>(() => {
-    // Round to nearest 5 minutes
     const mins = Math.ceil((liveNow.getHours() * 60 + liveNow.getMinutes()) / 5) * 5;
     return `${Math.floor(mins / 60).toString().padStart(2, '0')}:${(mins % 60).toString().padStart(2, '0')}`;
   });
@@ -75,6 +88,15 @@ export const FreeClassroomLocator: React.FC = () => {
   const [minCapacityInput, setMinCapacityInput] = useState<number>(0);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'AVAILABLE' | 'AVAILABLE_SOON' | 'OCCUPIED'>('ALL');
   const [favoritesOnly, setFavoritesOnly] = useState<boolean>(false);
+
+  // Claimed room state (Requirement 12)
+  const [claimedRoomId, setClaimedRoomId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(CLAIMED_ROOM_KEY) || null;
+  });
+
+  // Selected room highlight on map (Requirement 11)
+  const [selectedMapRoomId, setSelectedMapRoomId] = useState<string | null>(null);
 
   // 4. Natural language AI room search
   const [nlSearchQuery, setNlSearchQuery] = useState<string>('');
@@ -96,15 +118,19 @@ export const FreeClassroomLocator: React.FC = () => {
     if (typeof window === 'undefined') return [];
     try {
       const saved = localStorage.getItem(FAVORITES_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : ['IST-204', 'IST-001', 'IST-518'];
+      return saved ? JSON.parse(saved) : ['IST-204', 'IST-509', 'IST-518'];
     } catch (e) {
-      return ['IST-204', 'IST-001', 'IST-518'];
+      return ['IST-204', 'IST-509', 'IST-518'];
     }
   });
 
-  // 7. Modal state
+  // 7. Modals state
   const [selectedRoomForDetails, setSelectedRoomForDetails] = useState<Room | null>(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+
+  // Squad Share Modal state (Requirement 13 & 16)
+  const [squadShareData, setSquadShareData] = useState<{ room: Room; status: RoomStatus } | null>(null);
+  const [isSquadShareOpen, setIsSquadShareOpen] = useState(false);
 
   // Persist favorites
   useEffect(() => {
@@ -116,16 +142,30 @@ export const FreeClassroomLocator: React.FC = () => {
     localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(recentSearches));
   }, [recentSearches]);
 
-  // Handle "Use Current Time" (Requirement 2)
-  const handleUseCurrentTime = () => {
+  // Persist claimed room
+  const handleToggleClaim = useCallback((roomId: string) => {
+    setClaimedRoomId((prev) => {
+      const next = prev === roomId ? null : roomId;
+      if (next) {
+        localStorage.setItem(CLAIMED_ROOM_KEY, next);
+      } else {
+        localStorage.removeItem(CLAIMED_ROOM_KEY);
+      }
+      return next;
+    });
+  }, []);
+
+  // Handle Switch to Live Mode (Requirement 6)
+  const handleSwitchToLiveMode = useCallback(() => {
     const now = new Date();
     setLiveNow(now);
+    setIsLiveMode(true);
     setSelectedDate(liveDateStr);
     const mins = Math.ceil((now.getHours() * 60 + now.getMinutes()) / 5) * 5;
     const timeStr = `${Math.floor(mins / 60).toString().padStart(2, '0')}:${(mins % 60).toString().padStart(2, '0')}`;
     setSelectedStartTime(timeStr);
     setActiveParsedQuery(null);
-  };
+  }, [liveDateStr]);
 
   // Next timetable change calculation (e.g. next period bell)
   const nextTimetableChange = useMemo(() => {
@@ -155,8 +195,8 @@ export const FreeClassroomLocator: React.FC = () => {
     const displayRange = `${minutesToDisplayTime(startMins)} → ${minutesToDisplayTime(endMins)}`;
 
     return {
-      date: selectedDate,
-      startTime: selectedStartTime,
+      date: isLiveMode ? liveDateStr : selectedDate,
+      startTime: isLiveMode ? liveTimeHHMM : selectedStartTime,
       endTime: endTimeStr,
       durationMinutes: selectedDuration,
       displayTimeRange: displayRange,
@@ -167,6 +207,9 @@ export const FreeClassroomLocator: React.FC = () => {
     };
   }, [
     activeParsedQuery,
+    isLiveMode,
+    liveDateStr,
+    liveTimeHHMM,
     selectedDate,
     selectedStartTime,
     selectedDuration,
@@ -180,48 +223,30 @@ export const FreeClassroomLocator: React.FC = () => {
     return rankRoomsForQuery(rooms, effectiveQuery);
   }, [rooms, effectiveQuery]);
 
-  // Calculate status for all rooms under current date & start time
+  // IDs of matching rooms from AI search / structured query (Requirement 10 & 23)
+  const highlightedRoomIds = useMemo(() => {
+    return matches.map((m) => m.room.id);
+  }, [matches]);
+
+  // Calculate status for all rooms under current date, start time, and seconds offset (Requirement 5)
   const allRoomStatuses = useMemo(() => {
     const map = new Map<string, RoomStatus>();
+    const queryDate = isLiveMode ? liveDateStr : selectedDate;
+    const queryTime = isLiveMode ? liveTimeHHMM : selectedStartTime;
+    const secondsOffset = isLiveMode ? liveNow.getSeconds() : 0;
+
     rooms.forEach((r) => {
       const status = calculateRoomStatus(
         r,
-        effectiveQuery.date,
-        effectiveQuery.startTime,
-        effectiveQuery.durationMinutes
+        queryDate,
+        queryTime,
+        effectiveQuery.durationMinutes,
+        secondsOffset
       );
       map.set(r.id, status);
     });
     return map;
-  }, [rooms, effectiveQuery]);
-
-  // Filtered rooms for Floor Grid
-  const gridRooms = useMemo(() => {
-    return rooms.filter((r) => {
-      if (selectedFloor !== 'ALL' && r.floor !== selectedFloor) return false;
-      if (acOnly && !r.hasAC) return false;
-      if (minCapacityInput > 0 && r.capacity < minCapacityInput) return false;
-      if (favoritesOnly && !favoriteRoomIds.includes(r.id)) return false;
-
-      const st = allRoomStatuses.get(r.id);
-      if (!st) return false;
-
-      if (statusFilter === 'AVAILABLE' && !st.isFreeForEntireDuration) return false;
-      if (statusFilter === 'AVAILABLE_SOON' && st.status !== 'AVAILABLE_SOON') return false;
-      if (statusFilter === 'OCCUPIED' && st.status !== 'OCCUPIED') return false;
-
-      return true;
-    });
-  }, [
-    rooms,
-    selectedFloor,
-    acOnly,
-    minCapacityInput,
-    favoritesOnly,
-    favoriteRoomIds,
-    statusFilter,
-    allRoomStatuses,
-  ]);
+  }, [rooms, isLiveMode, liveDateStr, liveTimeHHMM, selectedDate, selectedStartTime, liveNow, effectiveQuery.durationMinutes]);
 
   // Handle Natural Language Search Submission
   const handleNLSearch = (queryToRun?: string) => {
@@ -230,6 +255,7 @@ export const FreeClassroomLocator: React.FC = () => {
 
     const parsed = parseNaturalLanguageRoomQuery(queryText, liveNow);
     setActiveParsedQuery(parsed);
+    setIsLiveMode(false); // Enter planning mode for specific query
 
     // Sync input fields with parsed query
     setSelectedDate(parsed.date);
@@ -262,9 +288,25 @@ export const FreeClassroomLocator: React.FC = () => {
     );
   };
 
+  // Open Room Details Modal
   const handleOpenRoomDetails = (room: Room) => {
     setSelectedRoomForDetails(room);
+    setSelectedMapRoomId(room.id);
     setIsDetailsOpen(true);
+  };
+
+  // Selecting a room from AI search results (Requirement 11)
+  const handleSelectRoomFromResult = (room: Room) => {
+    setSelectedFloor(room.floor);
+    setSelectedMapRoomId(room.id);
+    setSelectedRoomForDetails(room);
+    setIsDetailsOpen(true);
+  };
+
+  // Quick Share from search results or map (Requirement 16)
+  const handleOpenSquadShare = (room: Room, status: RoomStatus) => {
+    setSquadShareData({ room, status });
+    setIsSquadShareOpen(true);
   };
 
   const handleUpdateRoomSpecs = (updatedRoom: Room) => {
@@ -280,49 +322,72 @@ export const FreeClassroomLocator: React.FC = () => {
       <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                 Live Free Classroom Locator
               </span>
-              <span className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">
-                Phase 2 Intelligent Availability
-              </span>
+
+              {/* Requirement 6: Live Mode vs Planning Mode Badge */}
+              {isLiveMode ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500 text-white shadow-2xs">
+                  <Radio className="w-3 h-3 animate-ping" />
+                  <span>● LIVE MODE</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500 text-white shadow-2xs">
+                  <span>● PLANNING MODE</span>
+                </span>
+              )}
             </div>
+
             <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white mt-1">
               Find an Uninterrupted Free Classroom
             </h2>
             <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-              Guaranteed free for your entire requested duration with strict conflict protection.
+              Interactive 3D building map with real-time countdown, strict timetable conflict protection, and WhatsApp squad coordination.
             </p>
           </div>
 
-          {/* Current Time Display & Use Current Time button */}
+          {/* Current Time Display & Live / Planning Mode Controls (Requirement 6) */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-right">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Current Time
+                {isLiveMode ? 'Live Browser Clock' : 'Planned Time'}
               </div>
-              <div className="text-base sm:text-lg font-black text-slate-900 dark:text-white font-mono">
-                {liveNow.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              <div className="text-base sm:text-lg font-black text-slate-900 dark:text-white font-mono tracking-wider">
+                {isLiveMode ? liveTimeFormatted : `${selectedStartTime} (${selectedDate})`}
               </div>
               <div className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium">
                 {nextTimetableChange}
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={handleUseCurrentTime}
-              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md shadow-indigo-600/20 flex items-center gap-2 transition cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Use Current Time</span>
-            </button>
+            {isLiveMode ? (
+              <button
+                type="button"
+                onClick={() => setIsLiveMode(false)}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center gap-2 transition cursor-pointer border border-slate-300 dark:border-slate-700"
+                title="Manually choose custom date & time"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Planning Mode</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSwitchToLiveMode}
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-600/20 flex items-center gap-2 transition cursor-pointer"
+                title="Switch back to current live time"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>● Switch to Live Mode</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* 2. Natural Language AI Search Bar (Requirement 3 & 24) */}
+        {/* 2. Natural Language AI Search Bar (Requirement 10 & 23) */}
         <div className="mt-5 pt-5 border-t border-slate-100 dark:border-slate-800">
           <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
@@ -343,7 +408,7 @@ export const FreeClassroomLocator: React.FC = () => {
                 type="text"
                 value={nlSearchQuery}
                 onChange={(e) => setNlSearchQuery(e.target.value)}
-                placeholder="Try: I need an AC room on the ground floor for 8 people for 2 hours..."
+                placeholder="Try: I need an AC room for 8 people for 2 hours..."
                 className="w-full pl-10 pr-3.5 py-2.5 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-white"
               />
             </div>
@@ -352,7 +417,7 @@ export const FreeClassroomLocator: React.FC = () => {
               className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-bold text-xs shadow-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <Search className="w-3.5 h-3.5" />
-              <span>Find Room</span>
+              <span>Find & Highlight Rooms</span>
             </button>
           </form>
 
@@ -360,11 +425,11 @@ export const FreeClassroomLocator: React.FC = () => {
           <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
             <span className="text-[11px] font-semibold text-slate-400">Suggestions:</span>
             {[
-              'AC room on ground floor for 8 people for 2 hours',
+              'I need an AC room for 8 people for 2 hours',
               'Room for 90 minutes',
               'Classroom from 1 PM to 3 PM',
               'For me and 5 friends for 2 hours',
-              'Projector room tomorrow 10 AM to 12 PM',
+              'AC room on ground floor',
             ].map((promptText) => (
               <button
                 key={promptText}
@@ -380,7 +445,7 @@ export const FreeClassroomLocator: React.FC = () => {
             ))}
           </div>
 
-          {/* Search History (Requirement 22) */}
+          {/* Search History */}
           {recentSearches.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
@@ -412,20 +477,23 @@ export const FreeClassroomLocator: React.FC = () => {
           )}
         </div>
 
-        {/* Extracted Requirements Preview (Requirement 24) */}
+        {/* Extracted Requirements Preview */}
         {activeParsedQuery && (
           <div className="mt-4 p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-indigo-950 dark:text-indigo-200 text-xs">
             <div className="flex items-center justify-between">
               <span className="font-extrabold uppercase tracking-wider text-[10px] flex items-center gap-1 text-indigo-700 dark:text-indigo-400">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Parsed Query Requirements</span>
+                <span>Parsed Query Requirements (Highlighted on Building Map)</span>
               </span>
               <button
                 type="button"
-                onClick={() => setActiveParsedQuery(null)}
+                onClick={() => {
+                  setActiveParsedQuery(null);
+                  handleSwitchToLiveMode();
+                }}
                 className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
-                Reset to Manual Filters
+                Reset to Live Mode
               </button>
             </div>
 
@@ -467,17 +535,17 @@ export const FreeClassroomLocator: React.FC = () => {
         )}
       </div>
 
-      {/* 3. Date, Time & Requirement Selector Panel (Requirement 1) */}
+      {/* 3. Planning & Filters Panel */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
         <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-              Exact Availability Interval
+              Date & Interval Parameters
             </h3>
           </div>
           <span className="text-[11px] font-mono text-slate-500">
-            Checking continuous slot: <strong>{effectiveQuery.displayTimeRange}</strong>
+            Evaluating continuous slot: <strong>{effectiveQuery.displayTimeRange}</strong>
           </span>
         </div>
 
@@ -492,6 +560,7 @@ export const FreeClassroomLocator: React.FC = () => {
               value={selectedDate}
               onChange={(e) => {
                 setSelectedDate(e.target.value);
+                setIsLiveMode(false);
                 setActiveParsedQuery(null);
               }}
               className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
@@ -508,6 +577,7 @@ export const FreeClassroomLocator: React.FC = () => {
               value={selectedStartTime}
               onChange={(e) => {
                 setSelectedStartTime(e.target.value);
+                setIsLiveMode(false);
                 setActiveParsedQuery(null);
               }}
               className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
@@ -594,8 +664,8 @@ export const FreeClassroomLocator: React.FC = () => {
               onChange={(e) => setStatusFilter(e.target.value as any)}
               className="px-2.5 py-1 text-xs bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
             >
-              <option value="ALL">All Rooms</option>
-              <option value="AVAILABLE">Available for Entire Time</option>
+              <option value="ALL">All Statuses</option>
+              <option value="AVAILABLE">Free for Entire Time</option>
               <option value="AVAILABLE_SOON">Available Soon</option>
               <option value="OCCUPIED">Occupied</option>
             </select>
@@ -603,7 +673,7 @@ export const FreeClassroomLocator: React.FC = () => {
         </div>
       </div>
 
-      {/* 4. Best Matching Rooms Section (Requirement 9 & 14) */}
+      {/* 4. Best Matching Rooms Section (Requirement 9, 11, 16) */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -624,7 +694,8 @@ export const FreeClassroomLocator: React.FC = () => {
             {matches.map(({ room, status, matchReasons }) => (
               <div
                 key={room.id}
-                className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-emerald-500/40 dark:border-emerald-500/30 p-4 shadow-xs hover:shadow-md transition flex flex-col justify-between"
+                onClick={() => handleSelectRoomFromResult(room)}
+                className="bg-white dark:bg-slate-900 rounded-2xl border-2 border-emerald-500/40 dark:border-emerald-500/30 p-4 shadow-xs hover:shadow-md transition flex flex-col justify-between cursor-pointer"
               >
                 <div>
                   <div className="flex items-start justify-between">
@@ -634,7 +705,7 @@ export const FreeClassroomLocator: React.FC = () => {
                           {room.roomNumber}
                         </h4>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300">
-                          🟢 AVAILABLE
+                          🟢 FREE NOW
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -644,7 +715,10 @@ export const FreeClassroomLocator: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => handleToggleFavorite(room.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleFavorite(room.id);
+                      }}
                       className="p-1 rounded-md text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition cursor-pointer"
                     >
                       <Star
@@ -653,11 +727,18 @@ export const FreeClassroomLocator: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Available window */}
+                  {/* Available window & Live Countdown */}
                   <div className="mt-3 p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/50 text-xs text-emerald-950 dark:text-emerald-200">
-                    <div className="font-bold flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Free: {status.availableTimeRange}</span>
+                    <div className="font-bold flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Free: {status.availableTimeRange}</span>
+                      </div>
+                      {status.countdownDisplay && (
+                        <span className="font-mono font-black text-xs text-emerald-700 dark:text-emerald-300">
+                          {status.countdownDisplay}
+                        </span>
+                      )}
                     </div>
                     {status.nextClass && (
                       <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-1">
@@ -684,17 +765,34 @@ export const FreeClassroomLocator: React.FC = () => {
                   <div className="flex items-center gap-2 text-[11px] text-slate-500">
                     {room.hasAC && <span className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">AC</span>}
                     {room.hasProjector && <span className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">Projector</span>}
-                    {room.hasSmartBoard && <span className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">Smart Board</span>}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleOpenRoomDetails(room)}
-                    className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
-                  >
-                    <span>View Room</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Requirement 16: Share From Search Results */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenSquadShare(room, status);
+                      }}
+                      className="px-2.5 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 rounded-lg flex items-center gap-1 cursor-pointer transition border border-emerald-200 dark:border-emerald-800"
+                    >
+                      <Send className="w-3 h-3" />
+                      <span>📲 Share</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectRoomFromResult(room);
+                      }}
+                      className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>Locate on Map</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -725,7 +823,7 @@ export const FreeClassroomLocator: React.FC = () => {
                   {alternatives.slice(0, 4).map(({ room, status, reason }, idx) => (
                     <div
                       key={idx}
-                      onClick={() => handleOpenRoomDetails(room)}
+                      onClick={() => handleSelectRoomFromResult(room)}
                       className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-800 text-xs flex items-center justify-between cursor-pointer hover:border-indigo-500 transition"
                     >
                       <div>
@@ -746,183 +844,24 @@ export const FreeClassroomLocator: React.FC = () => {
         )}
       </div>
 
-      {/* 5. Floor Grid Interface Upgrade (Requirement 7 & 19) */}
-      <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                Floor-by-Floor Classroom Grid
-              </h3>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Click any room to inspect current status, next class, available time, and full daily timetable.
-            </p>
-          </div>
+      {/* 5. Phase 3 Interactive Building Map (Requirement 1, 2, 3, 5, 9, 10, 22) */}
+      <BuildingMap
+        rooms={rooms}
+        roomStatuses={allRoomStatuses}
+        selectedFloor={selectedFloor}
+        onSelectFloor={setSelectedFloor}
+        selectedRoomId={selectedMapRoomId}
+        onSelectRoom={handleOpenRoomDetails}
+        favoriteRoomIds={favoriteRoomIds}
+        onToggleFavorite={handleToggleFavorite}
+        claimedRoomId={claimedRoomId}
+        highlightedRoomIds={highlightedRoomIds}
+        onOpenSquadShare={handleOpenSquadShare}
+        isLiveMode={isLiveMode}
+        currentTimeDisplay={isLiveMode ? liveTimeFormatted : `${selectedStartTime} (${selectedDate})`}
+      />
 
-          {/* Floor Selector Pills */}
-          <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar">
-            <button
-              type="button"
-              onClick={() => setSelectedFloor('ALL')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
-                selectedFloor === 'ALL'
-                  ? 'bg-indigo-600 text-white shadow-2xs'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-              }`}
-            >
-              All Floors
-            </button>
-            {[0, 1, 2, 3, 4, 5, 6, 7].map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => setSelectedFloor(f)}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
-                  selectedFloor === f
-                    ? 'bg-indigo-600 text-white shadow-2xs'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
-              >
-                {f === 0 ? 'Ground' : `Floor ${f}`}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Legend */}
-        <div className="flex flex-wrap items-center gap-4 text-xs font-semibold text-slate-600 dark:text-slate-400">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-            <span>🟢 AVAILABLE (Free for requested time)</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-            <span>🟡 AVAILABLE SOON (Free in &lt;30m)</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-            <span>🔴 OCCUPIED (Class in session)</span>
-          </div>
-        </div>
-
-        {/* The Grid Cards */}
-        {gridRooms.length === 0 ? (
-          <div className="text-center py-8 text-slate-400 text-xs">
-            No rooms found matching the current floor/status filters.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
-            {gridRooms.map((room) => {
-              const st = allRoomStatuses.get(room.id);
-              if (!st) return null;
-
-              const isFav = favoriteRoomIds.includes(room.id);
-
-              return (
-                <div
-                  key={room.id}
-                  onClick={() => handleOpenRoomDetails(room)}
-                  className={`p-4 rounded-xl border transition-all cursor-pointer hover:shadow-md relative flex flex-col justify-between ${
-                    st.isFreeForEntireDuration
-                      ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-300/70 dark:border-emerald-800/80 hover:border-emerald-500'
-                      : st.status === 'AVAILABLE_SOON'
-                      ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-300/70 dark:border-amber-800/80 hover:border-amber-500'
-                      : 'bg-rose-50/40 dark:bg-rose-950/20 border-rose-300/70 dark:border-rose-800/80 hover:border-rose-500'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <h4 className="text-base font-extrabold text-slate-900 dark:text-white">
-                            {room.roomNumber}
-                          </h4>
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                              st.isFreeForEntireDuration
-                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                                : st.status === 'AVAILABLE_SOON'
-                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                                : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                            }`}
-                          >
-                            {st.isFreeForEntireDuration
-                              ? '🟢 AVAILABLE'
-                              : st.status === 'AVAILABLE_SOON'
-                              ? '🟡 AVAILABLE SOON'
-                              : '🔴 OCCUPIED'}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                          {room.floorName} • Capacity: {room.capacity}
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleFavorite(room.id);
-                        }}
-                        className="p-1 text-amber-500 hover:scale-110 transition cursor-pointer"
-                      >
-                        <Star
-                          className={`w-4 h-4 ${isFav ? 'fill-amber-400 text-amber-500' : 'text-slate-300 dark:text-slate-600'}`}
-                        />
-                      </button>
-                    </div>
-
-                    {/* Status Breakdown for Available vs Occupied (Requirement 7) */}
-                    {st.isFreeForEntireDuration ? (
-                      <div className="mt-3 text-xs">
-                        <div className="text-emerald-800 dark:text-emerald-300 font-semibold flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-emerald-600" />
-                          <span>Free until: <strong>{st.freeUntil || 'End of Day'}</strong></span>
-                        </div>
-                        {st.nextClass && (
-                          <div className="text-[11px] text-slate-600 dark:text-slate-400 mt-1 truncate">
-                            Next: {st.nextClass.name} at {st.nextClass.startsAt}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="mt-3 text-xs">
-                        {st.currentClass ? (
-                          <div className="text-rose-700 dark:text-rose-300 font-semibold truncate">
-                            Class: <strong>{st.currentClass.name}</strong> until {st.currentClass.until}
-                          </div>
-                        ) : (
-                          <div className="text-amber-700 dark:text-amber-300 font-semibold">
-                            Conflict during requested period
-                          </div>
-                        )}
-                        {st.nextAvailableTime && (
-                          <div className="text-[11px] text-slate-600 dark:text-slate-400 mt-1">
-                            Free at: <strong>{st.nextAvailableTime}</strong>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
-                    <span className="flex items-center gap-1 font-semibold">
-                      {room.hasAC ? 'AC Room' : 'Non-AC'}
-                    </span>
-                    <span className="text-indigo-600 dark:text-indigo-400 font-bold hover:underline">
-                      View Details →
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Room Details Modal */}
+      {/* Room Details Modal (Requirement 4, 5, 7, 8, 12, 13) */}
       {selectedRoomForDetails && (
         <RoomDetailsModal
           room={selectedRoomForDetails}
@@ -933,6 +872,20 @@ export const FreeClassroomLocator: React.FC = () => {
           onToggleFavorite={handleToggleFavorite}
           onUpdateRoom={handleUpdateRoomSpecs}
           dateStr={effectiveQuery.date}
+          currentTimeDisplay={isLiveMode ? liveTimeFormatted : `${selectedStartTime} (${selectedDate})`}
+          isClaimed={claimedRoomId === selectedRoomForDetails.id}
+          onToggleClaim={handleToggleClaim}
+          onOpenSquadShare={(r, s) => handleOpenSquadShare(r, s)}
+        />
+      )}
+
+      {/* Squad Share Modal (Requirement 13, 14, 15) */}
+      {squadShareData && (
+        <SquadShareModal
+          isOpen={isSquadShareOpen}
+          onClose={() => setIsSquadShareOpen(false)}
+          room={squadShareData.room}
+          status={squadShareData.status}
         />
       )}
     </div>

@@ -43,7 +43,7 @@ export interface RoomStatus {
     startsAt: string;
     faculty?: string;
   } | null;
-  freeUntil: string | null; // e.g. "04:10 PM" or "End of Day"
+  freeUntil: string | null; // e.g. "02:30 PM" or "Free for the rest of the scheduled day"
   freeMinutes: number; // consecutive minutes from start time until next class
   availableTimeRange: string; // e.g. "02:00 PM → 04:10 PM"
   nextAvailableTime: string | null; // e.g. "03:20 PM" if occupied now
@@ -61,6 +61,11 @@ export interface RoomStatus {
     subject: string;
     section: string;
   }[];
+  // Phase 3 Live Countdown properties
+  secondsRemainingUntilNextClass: number | null;
+  secondsRemainingInCurrentClass: number | null;
+  countdownDisplay: string; // "00:47:18" or "Free rest of day" or "Occupied"
+  isRestOfDayFree: boolean;
 }
 
 export interface StructuredRoomQuery {

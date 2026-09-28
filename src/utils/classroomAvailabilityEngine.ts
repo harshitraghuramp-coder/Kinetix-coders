@@ -149,21 +149,73 @@ export function isRoomFree(room: Room, dateStr: string, startTime: string, endTi
 }
 
 /**
- * Calculates detailed room status, available until, next class, and full schedule
+ * Formats seconds into HH:MM:SS string
+ * e.g. 2838 -> "00:47:18"
+ */
+export function formatSecondsToHHMMSS(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Generates dynamic WhatsApp message for "Call the Squad"
+ */
+export function generateSquadMessage(
+  roomNumber: string,
+  freeUntil: string | null,
+  freeMinutes: number,
+  isRestOfDayFree: boolean = false,
+  isOccupied: boolean = false,
+  nextAvailableTime: string | null = null
+): string {
+  if (isOccupied) {
+    if (nextAvailableTime) {
+      return `📍 Heading to ${roomNumber}!\nIt will be free starting at ${nextAvailableTime}.\nSee you there!`;
+    }
+    return `📍 Checking out ${roomNumber}!\nIt's currently in class, but should be free soon.\nStay posted!`;
+  }
+
+  if (isRestOfDayFree || freeUntil?.toLowerCase().includes('rest of the scheduled day')) {
+    return `📍 Heading to ${roomNumber}!\nIt's free for the rest of the scheduled day.\nOur group can work here until then. Come fast!`;
+  }
+
+  // Short period (< 45 mins)
+  if (freeMinutes > 0 && freeMinutes <= 45) {
+    return `📍 ${roomNumber} is free now, but only until ${freeUntil || 'soon'}.\nCome quickly!`;
+  }
+
+  // Long period (>= 120 mins)
+  if (freeMinutes >= 120) {
+    return `📍 Heading to ${roomNumber}!\nIt's free until ${freeUntil || 'later'}.\nOur group can work here until then. Come fast!`;
+  }
+
+  // Standard period
+  return `📍 Heading to ${roomNumber}!\nIt's free until ${freeUntil || 'next class'}.\nCome fast!`;
+}
+
+/**
+ * Calculates detailed room status, available until, next class, and full schedule with live countdown
  */
 export function calculateRoomStatus(
   room: Room,
   dateStr: string,
   queryStartTime: string,
-  durationMinutes: number
+  durationMinutes: number,
+  secondsOffset: number = 0
 ): RoomStatus {
   const queryStartMins = timeToMinutes(queryStartTime);
   const queryEndMins = queryStartMins + durationMinutes;
-  const queryEndTime = `${Math.floor(queryEndMins / 60).toString().padStart(2, '0')}:${(queryEndMins % 60).toString().padStart(2, '0')}`;
+  const currentTotalSeconds = queryStartMins * 60 + Math.max(0, Math.min(59, secondsOffset));
 
   const scheduled = getScheduledClassesForRoom(room, dateStr).sort(
     (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
   );
+
+  const dayName = getDayOfWeekName(dateStr);
+  const isWeekend = dayName === 'Saturday' || dayName === 'Sunday';
 
   // Check conflicts with the requested duration
   const conflictSlots: { startTime: string; endTime: string; subject: string; section: string }[] = [];
@@ -180,54 +232,64 @@ export function calculateRoomStatus(
     }
   });
 
-  const isFreeForEntireDuration = conflictSlots.length === 0;
+  const isFreeForEntireDuration = !isWeekend && conflictSlots.length === 0;
 
-  // Find current class at queryStartTime
+  // Find active class at current time
   const activeClass = scheduled.find((s) => {
-    const sMins = timeToMinutes(s.startTime);
-    const eMins = timeToMinutes(s.endTime);
-    return queryStartMins >= sMins && queryStartMins < eMins;
+    const sSec = timeToMinutes(s.startTime) * 60;
+    const eSec = timeToMinutes(s.endTime) * 60;
+    return currentTotalSeconds >= sSec && currentTotalSeconds < eSec;
   });
 
-  // Find next class starting strictly after queryStartTime
+  // Find next class strictly starting after currentTotalSeconds
   const upcomingClass = scheduled.find((s) => {
-    const sMins = timeToMinutes(s.startTime);
-    return sMins >= queryStartMins;
+    const sSec = timeToMinutes(s.startTime) * 60;
+    return sSec > currentTotalSeconds;
   });
 
-  // Calculate Available Until
+  // Calculate Available Until & Countdown
   let freeUntil: string | null = null;
   let freeMinutes = 0;
+  let secondsRemainingUntilNextClass: number | null = null;
+  let secondsRemainingInCurrentClass: number | null = null;
+  let isRestOfDayFree = false;
+  let countdownDisplay = '00:00:00';
 
-  if (activeClass) {
+  if (isWeekend) {
+    freeUntil = 'Free for the rest of the scheduled day';
+    isRestOfDayFree = true;
+    countdownDisplay = 'Weekend - No Classes';
+  } else if (activeClass) {
+    const activeEndSec = timeToMinutes(activeClass.endTime) * 60;
+    secondsRemainingInCurrentClass = Math.max(0, activeEndSec - currentTotalSeconds);
+    countdownDisplay = formatSecondsToHHMMSS(secondsRemainingInCurrentClass);
     freeUntil = null;
     freeMinutes = 0;
   } else if (upcomingClass) {
-    const nextStartMins = timeToMinutes(upcomingClass.startTime);
+    const nextStartSec = timeToMinutes(upcomingClass.startTime) * 60;
+    secondsRemainingUntilNextClass = Math.max(0, nextStartSec - currentTotalSeconds);
+    freeMinutes = Math.max(0, Math.floor(secondsRemainingUntilNextClass / 60));
+    countdownDisplay = formatSecondsToHHMMSS(secondsRemainingUntilNextClass);
     freeUntil = formatHHMMToDisplay(upcomingClass.startTime);
-    freeMinutes = Math.max(0, nextStartMins - queryStartMins);
   } else {
-    // Free for the rest of the college day (5:05 PM)
-    const collegeEndMins = timeToMinutes('17:05');
-    if (queryStartMins < collegeEndMins) {
-      freeUntil = '5:05 PM (End of Day)';
-      freeMinutes = collegeEndMins - queryStartMins;
-    } else {
-      freeUntil = 'Rest of Day';
-      freeMinutes = 180;
-    }
+    // No more scheduled classes on this day!
+    isRestOfDayFree = true;
+    freeUntil = 'Free for the rest of the scheduled day';
+    freeMinutes = 240;
+    countdownDisplay = 'Free for rest of day';
   }
 
   // Available Time Range
   const availableRangeEndMins = queryStartMins + freeMinutes;
-  const availableTimeRange =
-    freeMinutes > 0
-      ? `${minutesToDisplayTime(queryStartMins)} → ${minutesToDisplayTime(availableRangeEndMins)}`
-      : 'Currently Occupied';
+  const availableTimeRange = isWeekend
+    ? 'All Day (Weekend)'
+    : freeMinutes > 0
+    ? `${minutesToDisplayTime(queryStartMins)} → ${isRestOfDayFree ? 'End of Day' : minutesToDisplayTime(availableRangeEndMins)}`
+    : 'Currently Occupied';
 
   // Calculate Next Available Time if currently occupied or has a conflict
   let nextAvailableTime: string | null = null;
-  if (!isFreeForEntireDuration) {
+  if (!isFreeForEntireDuration && !isWeekend) {
     // Scan ahead from queryStartTime in 10-minute steps up to 17:05
     for (let t = queryStartMins; t <= timeToMinutes('17:05') - durationMinutes; t += 10) {
       const checkStart = `${Math.floor(t / 60).toString().padStart(2, '0')}:${(t % 60).toString().padStart(2, '0')}`;
@@ -241,21 +303,20 @@ export function calculateRoomStatus(
 
   // Determine Overall Status
   let status: 'AVAILABLE' | 'OCCUPIED' | 'AVAILABLE_SOON' | 'NOT_AVAILABLE' = 'AVAILABLE';
-  if (activeClass) {
-    const activeEndMins = timeToMinutes(activeClass.endTime);
-    if (activeEndMins - queryStartMins <= 30) {
-      status = 'AVAILABLE_SOON';
-    } else {
-      status = 'OCCUPIED';
-    }
-  } else if (!isFreeForEntireDuration) {
+  if (isWeekend) {
+    status = 'NOT_AVAILABLE';
+  } else if (activeClass) {
+    status = 'OCCUPIED';
+  } else if (upcomingClass && secondsRemainingUntilNextClass !== null && secondsRemainingUntilNextClass <= 30 * 60) {
+    // Free right now, but will be occupied in <= 30 minutes!
     status = 'AVAILABLE_SOON';
+  } else if (isRestOfDayFree || !upcomingClass) {
+    status = 'AVAILABLE';
   } else {
     status = 'AVAILABLE';
   }
 
   // Build full day period schedule
-  const dayName = getDayOfWeekName(dateStr);
   const todaySchedule = COLLEGE_TIME_SLOTS.map((slot) => {
     const matchedSession = scheduled.find((s) => s.period === slot.period);
     return {
@@ -293,6 +354,10 @@ export function calculateRoomStatus(
     nextAvailableTime,
     todaySchedule,
     conflictSlots,
+    secondsRemainingUntilNextClass,
+    secondsRemainingInCurrentClass,
+    countdownDisplay,
+    isRestOfDayFree,
   };
 }
 
